@@ -1,0 +1,1 @@
+# krita_image_search
