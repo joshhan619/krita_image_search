@@ -1,0 +1,18 @@
+[tool.vendoring]
+destination = "krita_image_search/vendor/"
+requirements = "krita_image_search/vendor/vendors.txt"
+namespace = "krita_image_search.vendor"
+
+protected-files = ["__init__.py", "README.md", "vendors.txt"]
+patches-dir = "krita_image_search/tools/vendoring/patches"
+
+[tool.vendoring.transformations]
+substitute = [
+  {match = '__import__("requests")', replace = '__import__("krita_image_search.vendor.requests")'}
+]
+drop = [
+    "bin/",
+    "*.so",
+    "typing.*",
+    "*/tests/"
+]

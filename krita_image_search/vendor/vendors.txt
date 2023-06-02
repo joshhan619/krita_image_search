@@ -1,0 +1,9 @@
+aiohttp==3.8.4
+multidict
+attrs
+yarl
+idna
+charset_normalizer
+async_timeout
+frozenlist
+aiosignal

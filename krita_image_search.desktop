@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=krita_image_search
+X-Python-2-Compatible=false
+X-Krita-Manual=myPluginManual.html
+Name=Krita Image Search
+Comment=Our very own plugin.
