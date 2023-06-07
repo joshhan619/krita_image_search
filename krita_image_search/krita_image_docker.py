@@ -4,45 +4,63 @@ from PyQt5.QtGui import QMovie, QPixmap
 from krita import *
 from krita_image_search.vendor import aiohttp
 import asyncio
-from .resources import *
-import socket
-import os
-import re
+from krita_image_search.resources import *
+import logging
+from pathlib import Path
+
+BASE_PATH = Path(__file__).parent
+LOG_PATH = (BASE_PATH / "krita_image_search.log").resolve()
+
+logging.basicConfig(
+    filename=LOG_PATH, 
+    filemode="w", 
+    format='%(asctime)s %(name)s - %(levelname)s - %(message)s'
+)
 
 class Krita_Image_Docker(DockWidget):
     def __init__(self):
         super().__init__()
         self.query = ""
-        hostname = socket.gethostname()
-        self.ip_address = socket.gethostbyname(hostname)
-        lat, lon, _ = re.split(",|\n", os.popen('curl ipinfo.io/loc').read())
-        self.lat = lat
-        self.lon = lon
 
+        # Init logging
+        self.logger: logging.Logger = logging.getLogger(__name__)
+
+        # Init Qt DockWidget
+        self.initWidget()
+
+    def initWidget(self):
         self.setWindowTitle("Krita Image Search")
         mainWidget = QWidget(self)
         self.setWidget(mainWidget)
         mainWidget.setLayout(QVBoxLayout())
 
+        # Init loading icon
         loadingGif = QMovie(":loading.gif")
         loadingGif.setScaledSize(QSize(100, 100))
         self.loadingIcon = QLabel(mainWidget)
         self.loadingIcon.setMovie(loadingGif)
-        self.loadingIcon.setAlignment(Qt.AlignHCenter)      
+        self.loadingIcon.setAlignment(Qt.AlignCenter)      
         loadingGif.start()
         self.loadingIcon.hide()
 
+        # Init searchbar
         self.searchBar = QLineEdit(mainWidget)
         self.searchBar.textChanged.connect(self.updateQuery)
-        self.searchBar.returnPressed.connect(self.createNewImageArea)
         self.searchBar.returnPressed.connect(self.searchImage)
         self.searchBar.returnPressed.connect(self.loadingIcon.show)
 
+        # Init image area
         self.imageArea = QScrollArea(mainWidget)
 
+        # Init error label
+        self.errorLabel = QLabel()
+
+        # Attach widgets to main docker widget
         mainWidget.layout().addWidget(self.searchBar)
         mainWidget.layout().addWidget(self.loadingIcon)
         mainWidget.layout().addWidget(self.imageArea)
+        mainWidget.layout().addWidget(self.errorLabel)
+        
 
     def canvasChanged(self, canvas):
         pass
@@ -59,8 +77,14 @@ class Krita_Image_Docker(DockWidget):
         self.widget().layout().addWidget(self.imageArea)
 
     def searchImage(self):
+        # Clear error message
+        self.errorLabel.setText("")
+
+        # Clear image area
+        self.createNewImageArea()
+
         self.searchApiThread = QThread()
-        self.searchApiWorker = SearchAPIWorker(self.query)
+        self.searchApiWorker = SearchAPIWorker(self.query, self.logger)
         self.searchApiWorker.moveToThread(self.searchApiThread)
         
         self.searchApiThread.started.connect(self.searchApiWorker.run)
@@ -68,13 +92,13 @@ class Krita_Image_Docker(DockWidget):
         self.searchApiWorker.finished.connect(self.searchApiWorker.deleteLater)
         self.searchApiThread.finished.connect(self.searchApiThread.deleteLater)
         
-
         self.searchApiThread.start()
 
         self.searchBar.setEnabled(False)
         self.searchApiThread.finished.connect(lambda: self.searchBar.setEnabled(True))
         self.searchApiThread.finished.connect(self.loadingIcon.hide)
         self.searchApiWorker.imLoaded.connect(self.createImageTile)
+        self.searchApiWorker.onError.connect(self.handleSearchError)
 
     def createImageTile(self, data):
         # TODO: add features to image tile: right click to copy link
@@ -87,42 +111,75 @@ class Krita_Image_Docker(DockWidget):
     def updateQuery(self, text):
         self.query = text
 
+    def handleSearchError(self, msg):
+        self.errorLabel.setText(msg)
+        self.errorLabel.setAlignment(Qt.AlignCenter)
+        self.errorLabel.setTextFormat(Qt.RichText)
+        self.widget().layout().addWidget(self.errorLabel)
+
 
 class SearchAPIWorker(QObject):
     finished = pyqtSignal()
     imLoaded = pyqtSignal(QByteArray)
+    onError = pyqtSignal(str)
     url = "https://joshapiproxy.herokuapp.com/api/unsplash"
 
-    def __init__(self, query):
+    def __init__(self, query, logger):
         super().__init__()
         self.q = query
+        self.logger = logger
 
+    def errorMsgFormat(self, msg): 
+        return f"<h3 style='color:#ce3531';margin:3px>Search Failed: {msg}</h3>"
 
     async def getSearchJson(self, session):
         params = {
             "query": self.q,
-            "page": 1
+            "page": 1,
+            "per_page": 30
         }
-        async with session.get(self.url, params=params) as resp:
-            return await resp.json()
-
-    async def imSearch(self):
-        async with aiohttp.ClientSession() as session:
-            r_json = await self.getSearchJson(session)
-            for im_result in r_json["results"]:
-                thumbnailParams = {
-                    "h": 200,
-                    "w": 200,
-                    "q": 80,
-                    "fit": "crop",
-                    "crop": "faces,focalpoint"
-
-                }
-                imUrl = im_result["urls"]["raw"]
-                async with session.get(imUrl, params=thumbnailParams) as resp:
-                    data = await resp.read()
-                    self.imLoaded.emit(data)
+        try:
+            async with session.get(self.url, params=params) as resp:
+                if resp.status == 429:
+                    self.onError.emit(self.errorMsgFormat("Too many requests, please try again later"))
+                elif resp.status == 200:
+                    return await resp.json()
+                elif resp.status >= 500:
+                    self.onError.emit(self.errorMsgFormat("Server Error"))
+                return None
             
+        except Exception as e:
+            self.logger.error(e)
+            self.logger.error(type(e))
+            self.onError.emit(self.errorMsgFormat("Server Error"))    
+            return None
+        
+    async def imSearch(self):
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            r_json = await self.getSearchJson(session)
+            if (r_json is not None):
+                count_images_failed = 0
+                for im_result in r_json["results"]:
+                    thumbnailParams = {
+                        "h": 200,
+                        "w": 200,
+                        "q": 80,
+                        "fit": "crop",
+                        "crop": "faces,focalpoint"
+
+                    }
+                    imUrl = im_result["urls"]["raw"]
+                    try:
+                        async with session.get(imUrl, params=thumbnailParams) as resp:
+                            data = await resp.read()
+                            self.imLoaded.emit(data)
+                    except Exception as e:
+                        self.logger.error(e)
+                        count_images_failed += 1
+                        continue
+                if count_images_failed > 0:
+                    self.onError.emit(self.errorMsgFormat(f"Cannot load {count_images_failed} image(s)"))
+
             self.finished.emit()
 
     def run(self):
