@@ -13,7 +13,6 @@ class Krita_Image_Docker(DockWidget):
     def __init__(self):
         super().__init__()
         self.query = ""
-        self.clientId = ""
         hostname = socket.gethostname()
         self.ip_address = socket.gethostbyname(hostname)
         lat, lon, _ = re.split(",|\n", os.popen('curl ipinfo.io/loc').read())
@@ -61,13 +60,12 @@ class Krita_Image_Docker(DockWidget):
 
     def searchImage(self):
         self.searchApiThread = QThread()
-        self.searchApiWorker = SearchAPIWorker(self.query, self.lat, self.lon, self.ip_address, self.clientId)
+        self.searchApiWorker = SearchAPIWorker(self.query)
         self.searchApiWorker.moveToThread(self.searchApiThread)
         
         self.searchApiThread.started.connect(self.searchApiWorker.run)
         self.searchApiWorker.finished.connect(self.searchApiThread.quit)
         self.searchApiWorker.finished.connect(self.searchApiWorker.deleteLater)
-        self.searchApiWorker.finished.connect(self.updateClientId)
         self.searchApiThread.finished.connect(self.searchApiThread.deleteLater)
         
 
@@ -89,61 +87,43 @@ class Krita_Image_Docker(DockWidget):
     def updateQuery(self, text):
         self.query = text
 
-    def updateClientId(self, newId):
-        self.clientId = newId
-
 
 class SearchAPIWorker(QObject):
-    finished = pyqtSignal(str)
+    finished = pyqtSignal()
     imLoaded = pyqtSignal(QByteArray)
-    url = "https://api.bing.microsoft.com/v7.0/images/search"
+    url = "https://joshapiproxy.herokuapp.com/api/unsplash"
 
-    def __init__(self, query, lat, lon, ip, clientId):
+    def __init__(self, query):
         super().__init__()
         self.q = query
-        self.lat = lat
-        self.lon = lon
-        self.ip = ip
-        self.clientId = clientId
 
-    def hasClientId(self):
-        return self.clientId != ""
 
     async def getSearchJson(self, session):
         params = {
-            "q": self.q,
-            # "count": 12 # TODO: set this to a variable in settings
+            "query": self.q,
+            "page": 1
         }
-        headers = {
-            "Ocp-Apim-Subscription-Key": "f5fa3af6ede24acd9d0392e618fbd9fe",
-            "User-Agent": "Mozilla/5.0 (Windows NT 6.3; WOW64; Trident/7.0; Touch; rv:11.0) like Gecko",
-            "X-MSEdge-ClientIP": self.ip,
-            "X-Search-Location": f"lat:{self.lat},long:{self.lon},re:22"
-        }
-        if (self.hasClientId()):
-            headers["X-MSEdge-ClientID"] = self.clientId
-        
-        async with session.get(self.url, params=params, headers=headers) as resp:
-            if (not self.hasClientId()):
-                self.clientId = resp.headers["X-MSEdge-ClientID"]
+        async with session.get(self.url, params=params) as resp:
             return await resp.json()
 
     async def imSearch(self):
         async with aiohttp.ClientSession() as session:
             r_json = await self.getSearchJson(session)
-            # create a pixmap from each queried image
-            thumbnailParams = {
-                "h": 100,
-                "w": 100,
-                "c": 7
-            }
-            for im_result in r_json["value"]:
-                imUrl = im_result["thumbnailUrl"]
+            for im_result in r_json["results"]:
+                thumbnailParams = {
+                    "h": 200,
+                    "w": 200,
+                    "q": 80,
+                    "fit": "crop",
+                    "crop": "faces,focalpoint"
+
+                }
+                imUrl = im_result["urls"]["raw"]
                 async with session.get(imUrl, params=thumbnailParams) as resp:
                     data = await resp.read()
                     self.imLoaded.emit(data)
             
-            self.finished.emit(self.clientId)
+            self.finished.emit()
 
     def run(self):
         asyncio.run(self.imSearch())
