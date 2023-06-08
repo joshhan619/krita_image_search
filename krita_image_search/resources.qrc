@@ -1,5 +1,9 @@
 <!DOCTYPE RCC><RCC version="1.0">
 <qresource>
-    <file>loading.gif</file>
+    <file>public/loading.gif</file>
+    <file>public/next.png</file>
+    <file>public/double-next.png</file>
+    <file>public/back.png</file>
+    <file>public/double-back.png</file>
 </qresource>
 </RCC>
