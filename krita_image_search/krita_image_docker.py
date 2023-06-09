@@ -100,6 +100,7 @@ class Krita_Image_Docker(DockWidget):
         # Set pagination button's query
         self.pagination.setQuery(query)
 
+        # Create thread for search API worker
         self.searchApiThread = QThread()
         self.searchApiWorker = SearchAPIWorker(query, pageNum, self.perPage, self.logger)
         self.searchApiWorker.moveToThread(self.searchApiThread)
@@ -156,6 +157,8 @@ class SearchAPIWorker(QObject):
         self.logger = logger
         self.pageNum = pageNum
         self.perPage = perPage
+        self.count_images_failed = 0
+        self.lock = asyncio.Lock()
 
     def errorMsgFormat(self, msg): 
         return f"<h3 style='color:#ce3531';margin:3px>Search Failed: {msg}</h3>"
@@ -182,31 +185,39 @@ class SearchAPIWorker(QObject):
             self.onError.emit(self.errorMsgFormat("Server Error"))    
             return None
         
+    async def getImageTask(self, session, url, params):
+        try:
+            async with session.get(url, params=params) as resp:
+                data = await resp.read()
+                await self.lock.acquire()
+                self.imLoaded.emit(data)
+                self.lock.release()
+        except Exception as e:
+            await self.lock.acquire()
+            self.logger.error(e)
+            self.count_images_failed += 1
+            self.lock.release()
+            
+        
     async def imSearch(self):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             r_json = await self.getSearchJson(session)
             if (r_json is not None):
-                count_images_failed = 0
+                tasks = []
+                thumbnailParams = {
+                    "h": 200,
+                    "w": 200,
+                    "q": 80,
+                    "fit": "crop",
+                    "crop": "faces,focalpoint"
+                }
                 for im_result in r_json["results"]:
-                    thumbnailParams = {
-                        "h": 200,
-                        "w": 200,
-                        "q": 80,
-                        "fit": "crop",
-                        "crop": "faces,focalpoint"
-
-                    }
                     imUrl = im_result["urls"]["raw"]
-                    try:
-                        async with session.get(imUrl, params=thumbnailParams) as resp:
-                            data = await resp.read()
-                            self.imLoaded.emit(data)
-                    except Exception as e:
-                        self.logger.error(e)
-                        count_images_failed += 1
-                        continue
-                if count_images_failed > 0:
-                    self.onError.emit(self.errorMsgFormat(f"Cannot load {count_images_failed} image(s)"))
+                    tasks.append(asyncio.ensure_future(self.getImageTask(session, imUrl, thumbnailParams)))
+
+                await asyncio.gather(*tasks)
+                if self.count_images_failed > 0:
+                    self.onError.emit(self.errorMsgFormat(f"Cannot load {self.count_images_failed} image(s)"))
 
             self.finished.emit()
 
