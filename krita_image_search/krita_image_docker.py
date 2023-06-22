@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QLabel, QLineEdit, QWidget, QScrollArea, QVBoxLayout
+from PyQt5.QtWidgets import QLabel, QLineEdit, QWidget, QScrollArea, QVBoxLayout, QPushButton, QSizePolicy
 from PyQt5.QtCore import Qt, QObject, QThread, QByteArray, pyqtSignal, QSize
 from PyQt5.QtGui import QMovie, QPixmap
 from krita import *
@@ -50,7 +50,9 @@ class Krita_Image_Docker(DockWidget):
         self.imageArea = QScrollArea(mainWidget)
 
         # Init error label
-        self.errorLabel = QLabel()
+        self.infoLabel = QLabel()
+        self.infoLabel.setFixedHeight(50)
+        self.infoLabel.setAlignment(Qt.AlignHCenter)
 
         # Init pagination
         self.pagination = PaginationWidget(self.searchImage)
@@ -67,7 +69,7 @@ class Krita_Image_Docker(DockWidget):
         mainWidget.layout().addWidget(self.imageArea)
         mainWidget.layout().addWidget(self.pagination)
         mainWidget.layout().setAlignment(self.pagination, Qt.AlignHCenter)
-        mainWidget.layout().addWidget(self.errorLabel)
+        mainWidget.layout().addWidget(self.infoLabel)
         
 
     def canvasChanged(self, canvas):
@@ -89,7 +91,7 @@ class Krita_Image_Docker(DockWidget):
             
     def searchImage(self, query, pageNum):
         # Clear error message
-        self.errorLabel.setText("")
+        self.infoLabel.setText("")
 
         # Clear image area
         self.createNewImageArea()
@@ -102,10 +104,10 @@ class Krita_Image_Docker(DockWidget):
 
         # Create thread for search API worker
         self.searchApiThread = QThread()
-        self.searchApiWorker = SearchAPIWorker(query, pageNum, self.perPage, self.logger)
+        self.searchApiWorker = SearchAPIWorker(self.logger)
         self.searchApiWorker.moveToThread(self.searchApiThread)
         
-        self.searchApiThread.started.connect(self.searchApiWorker.run)
+        self.searchApiThread.started.connect(lambda: self.searchApiWorker.queryImages(query, pageNum, self.perPage))
         self.searchApiWorker.finished.connect(self.searchApiThread.quit)
         self.searchApiWorker.finished.connect(self.searchApiWorker.deleteLater)
         self.searchApiThread.finished.connect(self.searchApiThread.deleteLater)
@@ -120,62 +122,79 @@ class Krita_Image_Docker(DockWidget):
         self.searchApiWorker.onError.connect(self.handleSearchError)
         self.searchApiWorker.queried.connect(self.createPagination)
 
+    def getFullImage(self, fullUrl, download_location):
+        self.searchApiThread = QThread()
+        self.searchApiWorker = SearchAPIWorker(self.logger)
+        self.searchApiWorker.moveToThread(self.searchApiThread)
+
+        self.searchApiThread.started.connect(lambda: self.searchApiWorker.downloadImage(fullUrl, download_location))
+        self.searchApiWorker.finished.connect(self.searchApiThread.quit)
+        self.searchApiWorker.finished.connect(self.searchApiWorker.deleteLater)
+        self.searchApiThread.finished.connect(self.searchApiThread.deleteLater)
+
+        self.searchApiThread.start()
+        self.searchApiWorker.fullImageLoaded.connect(self.copyToClipboard)
+
     def resetSearch(self):
         self.searchBar.setEnabled(True)
         self.searchBar.setText("")
         self.query = ""
 
-    def createImageTile(self, data):
-        # TODO: add features to image tile: right click to copy link
+    def createImageTile(self, data, fullUrl, download_location):
         pixmap = QPixmap()
         pixmap.loadFromData(data)
-        image = QLabel()
-        image.setPixmap(pixmap.scaledToWidth(100))
-        self.imageArea.widget().layout().addWidget(image)
-        self.imageArea.widget().layout().setAlignment(image, Qt.AlignHCenter)
+        image = QIcon(pixmap)
+        imageBtn = QPushButton(image, "")
+        imageBtn.setIconSize(pixmap.rect().size())
+        imageBtn.clicked.connect(lambda: self.getFullImage(fullUrl, download_location))
+        self.imageArea.widget().layout().addWidget(imageBtn)
 
     def updateQuery(self, text):
         self.query = text
 
     def handleSearchError(self, msg):
-        self.errorLabel.setText(msg)
-        self.errorLabel.setAlignment(Qt.AlignCenter)
-        self.errorLabel.setTextFormat(Qt.RichText)
-        self.widget().layout().addWidget(self.errorLabel)
+        self.infoLabel.setText(msg)
+        self.infoLabel.setAlignment(Qt.AlignCenter)
+        self.infoLabel.setTextFormat(Qt.RichText)
+        self.widget().layout().addWidget(self.infoLabel)
+
+    def copyToClipboard(self, data):
+        clipboard = QtGui.QGuiApplication.clipboard()
+        pixmap = QPixmap()
+        pixmap.loadFromData(data)
+        clipboard.setPixmap(pixmap)
+        self.infoLabel.setText("<h3 style='margin:3px'>Copied image to clipboard</h3>")
 
 
 class SearchAPIWorker(QObject):
     finished = pyqtSignal()
-    imLoaded = pyqtSignal(QByteArray)
+    imLoaded = pyqtSignal(QByteArray, str, str)
     onError = pyqtSignal(str)
     queried = pyqtSignal(int, int)
-    url = "https://joshapiproxy.herokuapp.com/api/unsplash"
+    fullImageLoaded = pyqtSignal(QByteArray)
+    baseUrl = "https://joshapiproxy.herokuapp.com/api/unsplash"
 
-    def __init__(self, query, pageNum, perPage, logger):
+    def __init__(self, logger):
         super().__init__()
-        self.q = query
         self.logger = logger
-        self.pageNum = pageNum
-        self.perPage = perPage
         self.count_images_failed = 0
-        self.lock = asyncio.Lock()
 
     def errorMsgFormat(self, msg): 
-        return f"<h3 style='color:#ce3531';margin:3px>Search Failed: {msg}</h3>"
+        return f"<h3 style='color:#ce3531;margin:3px'>Search Failed: {msg}</h3>"
 
-    async def getSearchJson(self, session):
+    async def getSearchJson(self, query, pageNum, perPage, session):
         params = {
-            "query": self.q,
-            "page": self.pageNum,
-            "per_page": self.perPage
+            "query": query,
+            "page": pageNum,
+            "per_page": perPage
         }
         try:
-            async with session.get(self.url, params=params) as resp:
+            async with session.get(f"{self.baseUrl}/search", params=params) as resp:
                 if resp.status == 429:
                     self.onError.emit(self.errorMsgFormat("Too many requests, please try again later"))
                 elif resp.status == 200:
                     json = await resp.json()
-                    self.queried.emit(self.pageNum, json["total_pages"])
+                    self.queried.emit(pageNum, json["total_pages"])
                     return json
                 elif resp.status >= 500:
                     self.onError.emit(self.errorMsgFormat("Server Error"))
@@ -185,23 +204,33 @@ class SearchAPIWorker(QObject):
             self.onError.emit(self.errorMsgFormat("Server Error"))    
             return None
         
-    async def getImageTask(self, session, url, params):
+    async def getImageTask(self, session, url, fullUrl, download_location, params, lock):
         try:
             async with session.get(url, params=params) as resp:
                 data = await resp.read()
-                await self.lock.acquire()
-                self.imLoaded.emit(data)
-                self.lock.release()
+                await lock.acquire()
+                self.imLoaded.emit(data, fullUrl, download_location)
+                lock.release()
         except Exception as e:
-            await self.lock.acquire()
+            await lock.acquire()
             self.logger.error(e)
             self.count_images_failed += 1
-            self.lock.release()
+            lock.release()
+
+    async def downloadLocation(self, session, download_location):
+        try:
+            async with session.get(download_location) as resp:
+                if resp.status == 200:
+                    return True
+                else:
+                    return False
+        except Exception as e:
+            self.logger.error(e)
+            return False
             
-        
-    async def imSearch(self):
+    async def imSearch(self, query, pageNum, perPage):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            r_json = await self.getSearchJson(session)
+            r_json = await self.getSearchJson(query, pageNum, perPage, session)
             if (r_json is not None):
                 tasks = []
                 thumbnailParams = {
@@ -211,9 +240,12 @@ class SearchAPIWorker(QObject):
                     "fit": "crop",
                     "crop": "faces,focalpoint"
                 }
+                lock = asyncio.Lock()
                 for im_result in r_json["results"]:
                     imUrl = im_result["urls"]["raw"]
-                    tasks.append(asyncio.ensure_future(self.getImageTask(session, imUrl, thumbnailParams)))
+                    fullUrl = im_result["urls"]["full"]
+                    download_location = im_result["links"]["download_location"].replace("https://api.unsplash.com", self.baseUrl)
+                    tasks.append(asyncio.create_task(self.getImageTask(session, imUrl, fullUrl, download_location, thumbnailParams, lock)))
 
                 await asyncio.gather(*tasks)
                 if self.count_images_failed > 0:
@@ -221,8 +253,27 @@ class SearchAPIWorker(QObject):
 
             self.finished.emit()
 
-    def run(self):
-        asyncio.run(self.imSearch())
+    async def download(self, url, download_location):
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            downloadSuccess = await self.downloadLocation(session, download_location)
+            if downloadSuccess:
+                try:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            self.fullImageLoaded.emit(data)
+                        elif resp.status >= 500:
+                            self.onError.emit(self.errorMsgFormat("Server Error"))
+                except Exception as e:
+                    self.logger.error(e)
+                    self.onError.emit(self.errorMsgFormat("Server Error"))
+            self.finished.emit()   
+
+    def queryImages(self, query, pageNum, perPage):
+        asyncio.run(self.imSearch(query, pageNum, perPage))
+
+    def downloadImage(self, url, download_location):
+        asyncio.run(self.download(url, download_location))
 
         
 Krita.instance().addDockWidgetFactory(DockWidgetFactory("krita_image_docker", DockWidgetFactoryBase.DockRight, Krita_Image_Docker))
