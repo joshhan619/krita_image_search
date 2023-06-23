@@ -1,11 +1,11 @@
-from PyQt5.QtWidgets import QLabel, QLineEdit, QWidget, QScrollArea, QVBoxLayout, QPushButton, QSizePolicy
-from PyQt5.QtCore import Qt, QObject, QThread, QByteArray, pyqtSignal, QSize
+from PyQt5.QtWidgets import QLabel, QLineEdit, QWidget, QScrollArea, QVBoxLayout, QPushButton
+from PyQt5.QtCore import Qt, QThread, QSize
 from PyQt5.QtGui import QMovie, QPixmap
 from krita import *
-from krita_image_search.vendor import aiohttp
 from krita_image_search.widgets import *
 from krita_image_search.resources import *
-import asyncio
+from krita_image_search.workers import *
+
 import logging
 from pathlib import Path
 
@@ -104,10 +104,11 @@ class Krita_Image_Docker(DockWidget):
 
         # Create thread for search API worker
         self.searchApiThread = QThread()
-        self.searchApiWorker = SearchAPIWorker(self.logger)
+        self.searchApiWorker = ImageSearchWorker(query, pageNum, self.perPage, self.logger)
         self.searchApiWorker.moveToThread(self.searchApiThread)
         
-        self.searchApiThread.started.connect(lambda: self.searchApiWorker.queryImages(query, pageNum, self.perPage))
+        #self.searchApiThread.started.connect(lambda: self.searchApiWorker.queryImages(query, pageNum, self.perPage))
+        self.searchApiThread.started.connect(self.searchApiWorker.run)
         self.searchApiWorker.finished.connect(self.searchApiThread.quit)
         self.searchApiWorker.finished.connect(self.searchApiWorker.deleteLater)
         self.searchApiThread.finished.connect(self.searchApiThread.deleteLater)
@@ -124,10 +125,10 @@ class Krita_Image_Docker(DockWidget):
 
     def getFullImage(self, fullUrl, download_location):
         self.searchApiThread = QThread()
-        self.searchApiWorker = SearchAPIWorker(self.logger)
+        self.searchApiWorker = ImageDownloadWorker(fullUrl, download_location, self.logger)
         self.searchApiWorker.moveToThread(self.searchApiThread)
 
-        self.searchApiThread.started.connect(lambda: self.searchApiWorker.downloadImage(fullUrl, download_location))
+        self.searchApiThread.started.connect(self.searchApiWorker.run)
         self.searchApiWorker.finished.connect(self.searchApiThread.quit)
         self.searchApiWorker.finished.connect(self.searchApiWorker.deleteLater)
         self.searchApiThread.finished.connect(self.searchApiThread.deleteLater)
@@ -164,116 +165,5 @@ class Krita_Image_Docker(DockWidget):
         pixmap.loadFromData(data)
         clipboard.setPixmap(pixmap)
         self.infoLabel.setText("<h3 style='margin:3px'>Copied image to clipboard</h3>")
-
-
-class SearchAPIWorker(QObject):
-    finished = pyqtSignal()
-    imLoaded = pyqtSignal(QByteArray, str, str)
-    onError = pyqtSignal(str)
-    queried = pyqtSignal(int, int)
-    fullImageLoaded = pyqtSignal(QByteArray)
-    baseUrl = "https://joshapiproxy.herokuapp.com/api/unsplash"
-
-    def __init__(self, logger):
-        super().__init__()
-        self.logger = logger
-        self.count_images_failed = 0
-
-    def errorMsgFormat(self, msg): 
-        return f"<h3 style='color:#ce3531;margin:3px'>Search Failed: {msg}</h3>"
-
-    async def getSearchJson(self, query, pageNum, perPage, session):
-        params = {
-            "query": query,
-            "page": pageNum,
-            "per_page": perPage
-        }
-        try:
-            async with session.get(f"{self.baseUrl}/search", params=params) as resp:
-                if resp.status == 429:
-                    self.onError.emit(self.errorMsgFormat("Too many requests, please try again later"))
-                elif resp.status == 200:
-                    json = await resp.json()
-                    self.queried.emit(pageNum, json["total_pages"])
-                    return json
-                elif resp.status >= 500:
-                    self.onError.emit(self.errorMsgFormat("Server Error"))
-                return None
-        except Exception as e:
-            self.logger.error(e)
-            self.onError.emit(self.errorMsgFormat("Server Error"))    
-            return None
-        
-    async def getImageTask(self, session, url, fullUrl, download_location, params, lock):
-        try:
-            async with session.get(url, params=params) as resp:
-                data = await resp.read()
-                await lock.acquire()
-                self.imLoaded.emit(data, fullUrl, download_location)
-                lock.release()
-        except Exception as e:
-            await lock.acquire()
-            self.logger.error(e)
-            self.count_images_failed += 1
-            lock.release()
-
-    async def downloadLocation(self, session, download_location):
-        try:
-            async with session.get(download_location) as resp:
-                if resp.status == 200:
-                    return True
-                else:
-                    return False
-        except Exception as e:
-            self.logger.error(e)
-            return False
-            
-    async def imSearch(self, query, pageNum, perPage):
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            r_json = await self.getSearchJson(query, pageNum, perPage, session)
-            if (r_json is not None):
-                tasks = []
-                thumbnailParams = {
-                    "h": 200,
-                    "w": 200,
-                    "q": 80,
-                    "fit": "crop",
-                    "crop": "faces,focalpoint"
-                }
-                lock = asyncio.Lock()
-                for im_result in r_json["results"]:
-                    imUrl = im_result["urls"]["raw"]
-                    fullUrl = im_result["urls"]["full"]
-                    download_location = im_result["links"]["download_location"].replace("https://api.unsplash.com", self.baseUrl)
-                    tasks.append(asyncio.create_task(self.getImageTask(session, imUrl, fullUrl, download_location, thumbnailParams, lock)))
-
-                await asyncio.gather(*tasks)
-                if self.count_images_failed > 0:
-                    self.onError.emit(self.errorMsgFormat(f"Cannot load {self.count_images_failed} image(s)"))
-
-            self.finished.emit()
-
-    async def download(self, url, download_location):
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            downloadSuccess = await self.downloadLocation(session, download_location)
-            if downloadSuccess:
-                try:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            data = await resp.read()
-                            self.fullImageLoaded.emit(data)
-                        elif resp.status >= 500:
-                            self.onError.emit(self.errorMsgFormat("Server Error"))
-                except Exception as e:
-                    self.logger.error(e)
-                    self.onError.emit(self.errorMsgFormat("Server Error"))
-            self.finished.emit()   
-
-    def queryImages(self, query, pageNum, perPage):
-        asyncio.run(self.imSearch(query, pageNum, perPage))
-
-    def downloadImage(self, url, download_location):
-        asyncio.run(self.download(url, download_location))
-
         
 Krita.instance().addDockWidgetFactory(DockWidgetFactory("krita_image_docker", DockWidgetFactoryBase.DockRight, Krita_Image_Docker))
