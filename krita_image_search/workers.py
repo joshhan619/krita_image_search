@@ -7,7 +7,7 @@ class SearchAPIWorker(QObject):
     onError = pyqtSignal(str)
     
     fullImageLoaded = pyqtSignal(QByteArray)
-    baseUrl = "https://joshapiproxy.herokuapp.com/api/unsplash"
+    baseUrl = "https://joshapiproxy.fly.dev/api/unsplash"
 
     def __init__(self, logger):
         super().__init__()
