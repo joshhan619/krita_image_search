@@ -39,7 +39,7 @@ class Krita_Image_Docker(DockWidget):
 
         # Init loading icon
         loadingGif = QMovie(":public/loading.gif")
-        loadingGif.setScaledSize(QSize(100, 100))
+        loadingGif.setScaledSize(QSize(50, 50))
         self.loadingIcon = QLabel(mainWidget)
         self.loadingIcon.setMovie(loadingGif)
         self.loadingIcon.setAlignment(Qt.AlignCenter)      
@@ -51,8 +51,8 @@ class Krita_Image_Docker(DockWidget):
 
         # Init error label
         self.infoLabel = QLabel()
-        self.infoLabel.setFixedHeight(50)
         self.infoLabel.setAlignment(Qt.AlignHCenter)
+        self.infoLabel.hide()
 
         # Init pagination
         self.pagination = PaginationWidget(self.searchImage)
@@ -65,12 +65,11 @@ class Krita_Image_Docker(DockWidget):
 
         # Attach widgets to main docker widget
         mainWidget.layout().addWidget(self.searchBar)
-        mainWidget.layout().addWidget(self.loadingIcon)
         mainWidget.layout().addWidget(self.imageArea)
         mainWidget.layout().addWidget(self.pagination)
         mainWidget.layout().setAlignment(self.pagination, Qt.AlignHCenter)
         mainWidget.layout().addWidget(self.infoLabel)
-        
+        mainWidget.layout().addWidget(self.loadingIcon)
 
     def canvasChanged(self, canvas):
         pass
@@ -92,6 +91,7 @@ class Krita_Image_Docker(DockWidget):
     def searchImage(self, query, pageNum):
         # Clear error message
         self.infoLabel.setText("")
+        self.infoLabel.hide()
 
         # Clear image area
         self.createNewImageArea()
@@ -107,7 +107,6 @@ class Krita_Image_Docker(DockWidget):
         self.searchApiWorker = ImageSearchWorker(query, pageNum, self.perPage, self.logger)
         self.searchApiWorker.moveToThread(self.searchApiThread)
         
-        #self.searchApiThread.started.connect(lambda: self.searchApiWorker.queryImages(query, pageNum, self.perPage))
         self.searchApiThread.started.connect(self.searchApiWorker.run)
         self.searchApiWorker.finished.connect(self.searchApiThread.quit)
         self.searchApiWorker.finished.connect(self.searchApiWorker.deleteLater)
@@ -124,6 +123,8 @@ class Krita_Image_Docker(DockWidget):
         self.searchApiWorker.queried.connect(self.createPagination)
 
     def getFullImage(self, fullUrl, download_location):
+        self.loadingIcon.show()
+
         self.searchApiThread = QThread()
         self.searchApiWorker = ImageDownloadWorker(fullUrl, download_location, self.logger)
         self.searchApiWorker.moveToThread(self.searchApiThread)
@@ -132,9 +133,11 @@ class Krita_Image_Docker(DockWidget):
         self.searchApiWorker.finished.connect(self.searchApiThread.quit)
         self.searchApiWorker.finished.connect(self.searchApiWorker.deleteLater)
         self.searchApiThread.finished.connect(self.searchApiThread.deleteLater)
+        self.searchApiThread.finished.connect(self.loadingIcon.hide)
 
         self.searchApiThread.start()
         self.searchApiWorker.fullImageLoaded.connect(self.copyToClipboard)
+        
 
     def resetSearch(self):
         self.searchBar.setEnabled(True)
@@ -157,7 +160,7 @@ class Krita_Image_Docker(DockWidget):
         self.infoLabel.setText(msg)
         self.infoLabel.setAlignment(Qt.AlignCenter)
         self.infoLabel.setTextFormat(Qt.RichText)
-        self.widget().layout().addWidget(self.infoLabel)
+        self.infoLabel.show()
 
     def copyToClipboard(self, data):
         clipboard = QtGui.QGuiApplication.clipboard()
@@ -165,5 +168,7 @@ class Krita_Image_Docker(DockWidget):
         pixmap.loadFromData(data)
         clipboard.setPixmap(pixmap)
         self.infoLabel.setText("<h3 style='margin:3px'>Copied image to clipboard</h3>")
+        self.infoLabel.show()
+        Krita.instance().action('paste_as_reference').trigger()
         
 Krita.instance().addDockWidgetFactory(DockWidgetFactory("krita_image_docker", DockWidgetFactoryBase.DockRight, Krita_Image_Docker))
