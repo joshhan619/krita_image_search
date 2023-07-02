@@ -1,7 +1,8 @@
-from PyQt5.QtWidgets import QLayout, QSizePolicy, QPushButton, QHBoxLayout, QWidget
+from PyQt5.QtWidgets import QLayout, QSizePolicy, QPushButton, QHBoxLayout, QWidget, QSlider, QFormLayout, QFrame
 from PyQt5.QtCore import Qt, QRect, QSize, QMargins, QPoint
-from PyQt5.QtGui import QIcon, QPixmap
+from PyQt5.QtGui import QIcon, QPixmap, QPalette
 from krita_image_search.resources import *
+from krita import *
 
 class FlowLayout(QLayout):
     def __init__(self, parent=None):
@@ -209,5 +210,51 @@ class PaginationWidget(QWidget):
         self.prevBtn.setDisabled(True)
         self.nextBtn.setDisabled(True)
         self.lastBtn.setDisabled(True)
-    
 
+class PropertiesWindow(QFrame):
+    def __init__(self, parent, background_color, initIconSize, propBtn):
+        super().__init__(parent)
+        self.setLayout(QFormLayout())
+        self.padding = 10
+        self.iconSize = initIconSize
+        self.propBtn = propBtn
+        
+        self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+        #self.setFocusPolicy(Qt.ClickFocus)
+        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Popup)
+
+        # Set background color
+        palette = QPalette()
+        palette.setColor(QPalette.Window, background_color)
+        self.setAutoFillBackground(True)
+        self.setPalette(palette)
+
+        # Icon Size slider
+        self.iconSizeSlider = QSlider(Qt.Horizontal, self)
+        self.iconSizeSlider.setMinimum(80)
+        self.iconSizeSlider.setMaximum(500)
+        self.iconSizeSlider.setValue(self.iconSize)
+        self.iconSizeSlider.valueChanged.connect(self.updateIconSize)
+        self.iconSizeSlider.sliderReleased.connect(self.saveProperties)
+
+        self.layout().addRow("&Icon Size:", self.iconSizeSlider)
+        self.setLayout(QHBoxLayout())
+        self.hide()
+        self.propBtn.clicked.connect(self.toggleHidden)
+
+    def alignWindow(self):
+        newPos = self.parent().mapToGlobal(self.propBtn.geometry().bottomRight())
+        self.move(newPos.x() - self.width(), newPos.y())
+
+    def updateIconSize(self, value):
+        self.iconSize = value
+
+    def toggleHidden(self):
+        if self.isHidden():
+            self.show()
+            self.alignWindow()
+        else:
+            self.hide()
+
+    def saveProperties(self):
+        Krita.instance().writeSetting("KritaImageSearch", "IconSize", str(self.iconSize))

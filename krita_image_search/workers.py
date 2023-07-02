@@ -69,8 +69,8 @@ class ImageSearchWorker(SearchAPIWorker):
             if (r_json is not None):
                 tasks = []
                 thumbnailParams = {
-                    "h": 200,
-                    "w": 200,
+                    "h": 500,
+                    "w": 500,
                     "q": 80,
                     "fit": "crop",
                     "crop": "faces,focalpoint"

@@ -1,8 +1,8 @@
-from PyQt5.QtWidgets import QLabel, QLineEdit, QWidget, QScrollArea, QVBoxLayout, QPushButton
+from PyQt5.QtWidgets import QLabel, QLineEdit, QWidget, QScrollArea, QVBoxLayout, QHBoxLayout, QPushButton
 from PyQt5.QtCore import Qt, QThread, QSize
-from PyQt5.QtGui import QMovie, QPixmap
+from PyQt5.QtGui import QMovie, QPixmap, QCursor, QPalette, QIcon
 from krita import *
-from krita_image_search.widgets import *
+from krita_image_search.widgets import FlowLayout, PaginationWidget, PropertiesWindow
 from krita_image_search.resources import *
 from krita_image_search.workers import *
 
@@ -57,14 +57,34 @@ class Krita_Image_Docker(DockWidget):
         # Init pagination
         self.pagination = PaginationWidget(self.searchImage)
 
+        # Init header containing searchbar and properties
+        header = QWidget(mainWidget)
+        header.setLayout(QHBoxLayout())
+
         # Init searchbar
-        self.searchBar = QLineEdit(mainWidget)
+        self.searchBar = QLineEdit(header)
+        self.searchBar.setPlaceholderText("Search")
         self.searchBar.textChanged.connect(self.updateQuery)
         self.searchBar.returnPressed.connect(lambda: self.searchImage(self.query, 1))
         self.searchBar.returnPressed.connect(self.pagination.disableButtons)
 
+        # Init properties button
+        propertiesIcon = Krita.instance().icon("settings-button")
+        self.propertiesButton = QPushButton(header)
+        self.propertiesButton.setFlat(True)
+        self.propertiesButton.setCursor(QCursor(Qt.PointingHandCursor))
+        self.propertiesButton.setIcon(propertiesIcon)
+
+        # Init properties window
+        iconSize = int(Krita.instance().readSetting("KritaImageSearch", "IconSize", "100"))
+        self.propertiesWindow = PropertiesWindow(mainWidget, mainWidget.palette().color(QPalette.Base), iconSize, self.propertiesButton)
+
+        # Attach widgets to header widget
+        header.layout().addWidget(self.searchBar)
+        header.layout().addWidget(self.propertiesButton)
+
         # Attach widgets to main docker widget
-        mainWidget.layout().addWidget(self.searchBar)
+        mainWidget.layout().addWidget(header)
         mainWidget.layout().addWidget(self.imageArea)
         mainWidget.layout().addWidget(self.pagination)
         mainWidget.layout().setAlignment(self.pagination, Qt.AlignHCenter)
@@ -148,8 +168,18 @@ class Krita_Image_Docker(DockWidget):
         pixmap = QPixmap()
         pixmap.loadFromData(data)
         image = QIcon(pixmap)
-        imageBtn = QPushButton(image, "")
-        imageBtn.setIconSize(pixmap.rect().size())
+        imageBtn = QPushButton(image, "", self.imageArea)
+        imageBtn.setFlat(True)
+        imageBtn.setCursor(QCursor(Qt.PointingHandCursor))
+
+        # Image tile behavior
+        imageBtn.setIconSize(QSize(self.propertiesWindow.iconSize, self.propertiesWindow.iconSize))
+        updateIconSize = lambda value: imageBtn.setIconSize(QSize(value, value))
+        self.propertiesWindow.iconSizeSlider.valueChanged.connect(updateIconSize)
+
+        # Disconnect signal and slot when image tiles are destroyed
+        imageBtn.destroyed.connect(lambda: self.propertiesWindow.iconSizeSlider.valueChanged.disconnect(updateIconSize))
+
         imageBtn.clicked.connect(lambda: self.getFullImage(fullUrl, download_location))
         self.imageArea.widget().layout().addWidget(imageBtn)
 
