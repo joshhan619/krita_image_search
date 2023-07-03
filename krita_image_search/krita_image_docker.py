@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import QLabel, QLineEdit, QWidget, QScrollArea, QVBoxLayout, QHBoxLayout, QPushButton
-from PyQt5.QtCore import Qt, QThread, QSize
-from PyQt5.QtGui import QMovie, QPixmap, QCursor, QPalette, QIcon
+from PyQt5.QtCore import Qt, QThread, QSize, QUrl
+from PyQt5.QtGui import QMovie, QPixmap, QCursor, QPalette, QIcon, QDesktopServices
 from krita import *
 from krita_image_search.widgets import FlowLayout, PaginationWidget, PropertiesWindow
 from krita_image_search.resources import *
@@ -23,7 +23,6 @@ class Krita_Image_Docker(DockWidget):
         super().__init__()
         self.query = ""
         self.pageOffset = 2
-        self.perPage = 30
 
         # Init logging
         self.logger: logging.Logger = logging.getLogger(__name__)
@@ -76,8 +75,11 @@ class Krita_Image_Docker(DockWidget):
         self.propertiesButton.setIcon(propertiesIcon)
 
         # Init properties window
+        isThumbnailMode = Krita.instance().readSetting("KritaImageSearch", "Mode", "Thumbnail") == "Thumbnail"
         iconSize = int(Krita.instance().readSetting("KritaImageSearch", "IconSize", "100"))
-        self.propertiesWindow = PropertiesWindow(mainWidget, mainWidget.palette().color(QPalette.Base), iconSize, self.propertiesButton)
+        perPage = int(Krita.instance().readSetting("KritaImageSearch", "ImagesPerPage", "10"))
+        quality = int(Krita.instance().readSetting("KritaImageSearch", "Quality", "75"))
+        self.propertiesWindow = PropertiesWindow(mainWidget, mainWidget.palette().color(QPalette.Base), iconSize, perPage, quality, isThumbnailMode, self.propertiesButton)
 
         # Attach widgets to header widget
         header.layout().addWidget(self.searchBar)
@@ -109,6 +111,11 @@ class Krita_Image_Docker(DockWidget):
         self.pagination.update(pageNum, 2, totalPages)
             
     def searchImage(self, query, pageNum):
+        if query == "" or pageNum <= 0:
+            self.resetSearch()
+            self.loadingIcon.hide()
+            return
+        
         # Clear error message
         self.infoLabel.setText("")
         self.infoLabel.hide()
@@ -124,7 +131,7 @@ class Krita_Image_Docker(DockWidget):
 
         # Create thread for search API worker
         self.searchApiThread = QThread()
-        self.searchApiWorker = ImageSearchWorker(query, pageNum, self.perPage, self.logger)
+        self.searchApiWorker = ImageSearchWorker(query, pageNum, self.propertiesWindow.perPage, self.propertiesWindow.quality, self.logger)
         self.searchApiWorker.moveToThread(self.searchApiThread)
         
         self.searchApiThread.started.connect(self.searchApiWorker.run)
@@ -164,7 +171,10 @@ class Krita_Image_Docker(DockWidget):
         self.searchBar.setText("")
         self.query = ""
 
-    def createImageTile(self, data, fullUrl, download_location):
+    def createImageTile(self, data, json):
+        fullUrl = json["urls"]["full"]
+        download_location = json["links"]["download_location"]
+
         pixmap = QPixmap()
         pixmap.loadFromData(data)
         image = QIcon(pixmap)
@@ -181,7 +191,48 @@ class Krita_Image_Docker(DockWidget):
         imageBtn.destroyed.connect(lambda: self.propertiesWindow.iconSizeSlider.valueChanged.disconnect(updateIconSize))
 
         imageBtn.clicked.connect(lambda: self.getFullImage(fullUrl, download_location))
-        self.imageArea.widget().layout().addWidget(imageBtn)
+        imageTile = QWidget(self.imageArea)
+        imageTile.setLayout(QHBoxLayout())
+
+        # Set background color
+        palette = QPalette()
+        palette.setColor(QPalette.Window, self.palette().color(QPalette.Base))
+        imageTile.setAutoFillBackground(True)
+        imageTile.setPalette(palette)
+
+        # Detail Mode - also add additional info from json
+        detailSection = QWidget(imageTile)
+        detailSection.setLayout(QVBoxLayout())
+        self.propertiesWindow.thumbnailMode.clicked.connect(detailSection.hide)
+        self.propertiesWindow.detailMode.clicked.connect(detailSection.show)
+        usernameHtml = f"""<span style=\"font-size: 16px; display: flex; justify-content: center\"><em>Photo by  
+                                <a href=\"{json['user']['links']['html']}?utm_source=krita_image_search&utm_medium=referral\">{json['user']['name']}</a> from 
+                                <a href=\"https://unsplash.com/?utm_source=krita_image_search&utm_medium=referral\">Unsplash</a></em>
+                            </span>"""
+
+        userLabel = QLabel(usernameHtml, detailSection)
+        userLabel.setOpenExternalLinks(True)
+        linkIcon = Krita.instance().icon("link")
+        linkButton = QPushButton("Link to web", detailSection)
+        linkButton.setFlat(True)
+        linkButton.setCursor(QCursor(Qt.PointingHandCursor))
+        linkButton.setIcon(linkIcon)
+        linkButton.setStyleSheet("display: flex; justify-content: center; align-items: center")
+        linkButton.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(json['links']['html'], QUrl.TolerantMode)))
+
+        detailSection.layout().addWidget(userLabel)
+        detailSection.layout().addWidget(linkButton)
+        detailSection.layout().addStretch()
+        detailSection.resize(QSize(150, detailSection.height()))
+        
+        imageTile.layout().addWidget(imageBtn)
+        imageTile.layout().addWidget(detailSection)
+        self.imageArea.widget().layout().addWidget(imageTile)
+
+        if self.propertiesWindow.isThumbnailMode:
+            detailSection.hide()
+        else:
+            detailSection.show()
 
     def updateQuery(self, text):
         self.query = text

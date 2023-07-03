@@ -18,14 +18,15 @@ class SearchAPIWorker(QObject):
         return f"<h3 style='color:#ce3531;margin:3px'>Search Failed: {msg}</h3>"    
 
 class ImageSearchWorker(SearchAPIWorker):
-    imLoaded = pyqtSignal(QByteArray, str, str)
+    imLoaded = pyqtSignal(QByteArray, object)
     queried = pyqtSignal(int, int)
 
-    def __init__(self, query, pageNum, perPage, logger):
+    def __init__(self, query, pageNum, perPage, quality, logger):
         super().__init__(logger)
         self.query = query
         self.pageNum = pageNum
         self.perPage = perPage
+        self.quality = quality
 
 
     async def getSearchJson(self, session):
@@ -50,12 +51,13 @@ class ImageSearchWorker(SearchAPIWorker):
             self.onError.emit(super().errorMsgFormat("Server Error"))    
             return None
         
-    async def getImageTask(self, session, url, fullUrl, download_location, params, lock):
+    async def getImageTask(self, session, json, params, lock):
+        url = json["urls"]["raw"]
         try:
             async with session.get(url, params=params) as resp:
                 data = await resp.read()
                 await lock.acquire()
-                self.imLoaded.emit(data, fullUrl, download_location)
+                self.imLoaded.emit(data, json)
                 lock.release()
         except Exception as e:
             await lock.acquire()
@@ -71,16 +73,14 @@ class ImageSearchWorker(SearchAPIWorker):
                 thumbnailParams = {
                     "h": 500,
                     "w": 500,
-                    "q": 80,
+                    "q": self.quality,
                     "fit": "crop",
                     "crop": "faces,focalpoint"
                 }
                 lock = asyncio.Lock()
                 for im_result in r_json["results"]:
-                    imUrl = im_result["urls"]["raw"]
-                    fullUrl = im_result["urls"]["full"]
-                    download_location = im_result["links"]["download_location"].replace("https://api.unsplash.com", self.baseUrl)
-                    tasks.append(asyncio.create_task(self.getImageTask(session, imUrl, fullUrl, download_location, thumbnailParams, lock)))
+                    im_result["links"]["download_location"] = im_result["links"]["download_location"].replace("https://api.unsplash.com", self.baseUrl)
+                    tasks.append(asyncio.create_task(self.getImageTask(session, im_result, thumbnailParams, lock)))
 
                 await asyncio.gather(*tasks)
                 if self.count_images_failed > 0:

@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QLayout, QSizePolicy, QPushButton, QHBoxLayout, QWidget, QSlider, QFormLayout, QFrame
+from PyQt5.QtWidgets import QLayout, QSizePolicy, QPushButton, QHBoxLayout, QWidget, QSlider, QFormLayout, QFrame, QSpinBox, QRadioButton
 from PyQt5.QtCore import Qt, QRect, QSize, QMargins, QPoint
 from PyQt5.QtGui import QIcon, QPixmap, QPalette
 from krita_image_search.resources import *
@@ -212,15 +212,17 @@ class PaginationWidget(QWidget):
         self.lastBtn.setDisabled(True)
 
 class PropertiesWindow(QFrame):
-    def __init__(self, parent, background_color, initIconSize, propBtn):
+    def __init__(self, parent, background_color, initIconSize, initPerPage, initQuality, isThumbnailMode, propBtn):
         super().__init__(parent)
         self.setLayout(QFormLayout())
         self.padding = 10
+        self.isThumbnailMode = isThumbnailMode
         self.iconSize = initIconSize
+        self.perPage = initPerPage
+        self.quality = initQuality
         self.propBtn = propBtn
         
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
-        #self.setFocusPolicy(Qt.ClickFocus)
         self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Popup)
 
         # Set background color
@@ -229,14 +231,45 @@ class PropertiesWindow(QFrame):
         self.setAutoFillBackground(True)
         self.setPalette(palette)
 
+        # View mode buttons
+        viewModes = QWidget(self)
+        self.thumbnailMode = QRadioButton("Thumbnail", viewModes)
+        self.thumbnailMode.setChecked(self.isThumbnailMode)
+        self.thumbnailMode.clicked.connect(lambda: self.updateMode("thumbnail"))
+
+        self.detailMode = QRadioButton("Detail", viewModes)
+        self.detailMode.setChecked(not self.isThumbnailMode)
+        self.detailMode.clicked.connect(lambda: self.updateMode("detail"))
+
+        viewModes.setLayout(QHBoxLayout())
+        viewModes.layout().addWidget(self.thumbnailMode)
+        viewModes.layout().addWidget(self.detailMode)
+
+        # (Images) perPage spinbox
+        self.perPageSpinbox = QSpinBox(self)
+        self.perPageSpinbox.setMinimum(5)
+        self.perPageSpinbox.setMaximum(30)
+        self.perPageSpinbox.setValue(self.perPage)
+        self.perPageSpinbox.valueChanged.connect(self.updatePerPage)
+
+        # Quality spinbox
+        self.qualitySpinbox = QSpinBox(self)
+        self.qualitySpinbox.setMaximum(100)
+        self.qualitySpinbox.setMinimum(0)
+        self.qualitySpinbox.setValue(self.quality)
+        self.qualitySpinbox.valueChanged.connect(self.updateQuality)
+
         # Icon Size slider
         self.iconSizeSlider = QSlider(Qt.Horizontal, self)
         self.iconSizeSlider.setMinimum(80)
         self.iconSizeSlider.setMaximum(500)
         self.iconSizeSlider.setValue(self.iconSize)
         self.iconSizeSlider.valueChanged.connect(self.updateIconSize)
-        self.iconSizeSlider.sliderReleased.connect(self.saveProperties)
+        self.iconSizeSlider.sliderReleased.connect(lambda: self.saveProperties("IconSize", self.iconSize))
 
+        self.layout().addRow("&Mode:", viewModes)
+        self.layout().addRow("&Images Per Page:", self.perPageSpinbox)
+        self.layout().addRow("&Quality:", self.qualitySpinbox)
         self.layout().addRow("&Icon Size:", self.iconSizeSlider)
         self.setLayout(QHBoxLayout())
         self.hide()
@@ -249,6 +282,22 @@ class PropertiesWindow(QFrame):
     def updateIconSize(self, value):
         self.iconSize = value
 
+    def updatePerPage(self, value):
+        self.perPage = value
+        self.saveProperties("ImagesPerPage", self.perPage)
+
+    def updateQuality(self, value):
+        self.quality = value
+        self.saveProperties("Quality", self.quality)
+
+    def updateMode(self, mode):
+        if mode == "thumbnail":
+            self.isThumbnailMode = True
+        else:
+            self.isThumbnailMode = False
+
+        self.saveProperties("Mode", "Thumbnail" if self.isThumbnailMode else "Detail")
+
     def toggleHidden(self):
         if self.isHidden():
             self.show()
@@ -256,5 +305,5 @@ class PropertiesWindow(QFrame):
         else:
             self.hide()
 
-    def saveProperties(self):
-        Krita.instance().writeSetting("KritaImageSearch", "IconSize", str(self.iconSize))
+    def saveProperties(self, name, value):
+        Krita.instance().writeSetting("KritaImageSearch", name, str(value))
