@@ -1,6 +1,6 @@
-from PyQt5.QtWidgets import QLayout, QSizePolicy, QPushButton, QHBoxLayout, QWidget, QSlider, QFormLayout, QFrame, QSpinBox, QRadioButton
-from PyQt5.QtCore import Qt, QRect, QSize, QMargins, QPoint
-from PyQt5.QtGui import QIcon, QPixmap, QPalette
+from PyQt5.QtWidgets import QLayout, QSizePolicy, QPushButton, QHBoxLayout, QVBoxLayout, QWidget, QSlider, QFormLayout, QFrame, QSpinBox, QRadioButton
+from PyQt5.QtCore import Qt, QRect, QSize, QMargins, QPoint, QUrl, pyqtSignal
+from PyQt5.QtGui import QIcon, QPixmap, QPalette, QCursor, QIcon, QDesktopServices, QFontMetrics
 from krita_image_search.resources import *
 from krita import *
 
@@ -212,11 +212,10 @@ class PaginationWidget(QWidget):
         self.lastBtn.setDisabled(True)
 
 class PropertiesWindow(QFrame):
-    def __init__(self, parent, background_color, initIconSize, initPerPage, initQuality, isThumbnailMode, propBtn):
+    def __init__(self, parent, background_color, initIconSize, initPerPage, initQuality, propBtn):
         super().__init__(parent)
         self.setLayout(QFormLayout())
         self.padding = 10
-        self.isThumbnailMode = isThumbnailMode
         self.iconSize = initIconSize
         self.perPage = initPerPage
         self.quality = initQuality
@@ -230,20 +229,6 @@ class PropertiesWindow(QFrame):
         palette.setColor(QPalette.Window, background_color)
         self.setAutoFillBackground(True)
         self.setPalette(palette)
-
-        # View mode buttons
-        viewModes = QWidget(self)
-        self.thumbnailMode = QRadioButton("Thumbnail", viewModes)
-        self.thumbnailMode.setChecked(self.isThumbnailMode)
-        self.thumbnailMode.clicked.connect(lambda: self.updateMode("thumbnail"))
-
-        self.detailMode = QRadioButton("Detail", viewModes)
-        self.detailMode.setChecked(not self.isThumbnailMode)
-        self.detailMode.clicked.connect(lambda: self.updateMode("detail"))
-
-        viewModes.setLayout(QHBoxLayout())
-        viewModes.layout().addWidget(self.thumbnailMode)
-        viewModes.layout().addWidget(self.detailMode)
 
         # (Images) perPage spinbox
         self.perPageSpinbox = QSpinBox(self)
@@ -267,7 +252,6 @@ class PropertiesWindow(QFrame):
         self.iconSizeSlider.valueChanged.connect(self.updateIconSize)
         self.iconSizeSlider.sliderReleased.connect(lambda: self.saveProperties("IconSize", self.iconSize))
 
-        self.layout().addRow("&Mode:", viewModes)
         self.layout().addRow("&Images Per Page:", self.perPageSpinbox)
         self.layout().addRow("&Quality:", self.qualitySpinbox)
         self.layout().addRow("&Icon Size:", self.iconSizeSlider)
@@ -290,14 +274,6 @@ class PropertiesWindow(QFrame):
         self.quality = value
         self.saveProperties("Quality", self.quality)
 
-    def updateMode(self, mode):
-        if mode == "thumbnail":
-            self.isThumbnailMode = True
-        else:
-            self.isThumbnailMode = False
-
-        self.saveProperties("Mode", "Thumbnail" if self.isThumbnailMode else "Detail")
-
     def toggleHidden(self):
         if self.isHidden():
             self.show()
@@ -307,3 +283,97 @@ class PropertiesWindow(QFrame):
 
     def saveProperties(self, name, value):
         Krita.instance().writeSetting("KritaImageSearch", name, str(value))
+
+class ImageTile(QWidget):
+    hovered = pyqtSignal(bool)
+
+    def __init__(self, image_data, onClickCallback, iconSize, json, parent=None):
+        super().__init__(parent)
+        self.setLayout(QHBoxLayout())
+
+        pixmap = QPixmap()
+        pixmap.loadFromData(image_data)
+        image = QIcon(pixmap)
+        self.imageBtn = QPushButton(image, "", self)
+        self.imageBtn.setFlat(True)
+        self.imageBtn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.imageBtn.clicked.connect(onClickCallback)
+        self.imageBtn.setLayout(QVBoxLayout())
+        self.imageBtn.layout().setContentsMargins(0, 0, 0, 0)
+        self.imageBtn.layout().setSpacing(0)
+        self.imageBtn.setObjectName("imageBtn")
+        self.imageBtn.setIconSize(QSize(iconSize, iconSize))
+        self.imageBtn.setStyleSheet("QPushButton#imageBtn { border:none; padding: 0 -2px 0 -2px }")
+
+        # Detail Mode - also add additional info from json
+        self.detailSection = QWidget(self)
+        self.detailSection.setLayout(QHBoxLayout())
+        redirectUrl = f"{json['user']['links']['html']}?utm_source=krita_image_search&utm_medium=referral"
+        userLink = ImageLink(redirectUrl, text=json['user']['name'], alignment="left", parent=self.detailSection)
+        userLink.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
+
+        linkIcon = Krita.instance().icon("link")
+        fullImageLink = ImageLink(json['links']['html'], icon=linkIcon, parent=self.detailSection)
+
+        self.detailSection.layout().addWidget(userLink)
+        self.detailSection.layout().addWidget(fullImageLink)
+        self.detailSection.layout().setAlignment(Qt.AlignLeft)
+        self.detailSection.setStyleSheet("background-color: rgba(0, 0, 0, 0.5)")
+        self.detailSection.layout().setContentsMargins(5, 5, 5, 5)
+        self.detailSection.raise_()
+        self.detailSection.hide()
+        self.hovered.connect(self.displayDetails)
+
+        self.layout().addWidget(self.imageBtn)
+        self.imageBtn.layout().addStretch()
+        self.imageBtn.layout().addWidget(self.detailSection)
+
+    def updateIconSize(self, value):
+        self.imageBtn.setIconSize(QSize(value, value))
+
+    def enterEvent(self, event):
+        self.hovered.emit(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.hovered.emit(False)
+        super().leaveEvent(event)
+
+    def displayDetails(self, isHovered):
+        if isHovered:
+            self.detailSection.show()
+        else:
+            self.detailSection.hide()
+
+class ImageLink(QPushButton):
+    def __init__(self, link, text="", alignment="center", icon=None, parent=None):
+        if icon is None:
+            self.isOnlyText = True
+            super().__init__(text, parent)
+        else:
+            self.isOnlyText = False
+            super().__init__(icon, text, parent)
+        
+        self.style = f"font-weight: bold; cursor: pointer; text-overflow: ellipsis; text-align: {alignment};"
+        self.setFlat(True)
+        self.fullText = text
+        self.setStyleSheet(self.style)
+        self.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(link, QUrl.TolerantMode)))
+
+    def enterEvent(self, event):
+        self.setStyleSheet(self.style + "text-decoration: underline")
+        if not self.isOnlyText:
+            self.setFlat(False)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.setStyleSheet(self.style + "text-decoration: none")
+        if not self.isOnlyText:
+            self.setFlat(True)
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event):
+        metrics = QFontMetrics(self.font())
+        elidedText = metrics.elidedText(self.fullText, Qt.ElideRight, self.width())
+        self.setText(elidedText)
+        super().resizeEvent(event)
