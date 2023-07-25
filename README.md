@@ -15,7 +15,7 @@ The Krita Image Search plugin is a powerful tool that enhances your creativity b
 
 ## Installation ##
 To install the Krita Image Search plugin, follow these steps:
-1. Download the latest release on Github.
+1. Download the latest release on Github by clicking **Code > Download ZIP** in the upper right.
 2. Open Krita and navigate to **Tools > Scripts > Import Python Plugin From File** and choose the downloaded .zip file.
 3. Restart Krita.
 
